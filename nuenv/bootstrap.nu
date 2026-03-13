@@ -3,19 +3,20 @@
 
 # Discover and load the .attrs.json file, which supplies Nuenv with all the
 # information it needs to realise the derivation.
-let here = $env.NIX_BUILD_TOP
 
-let attrsJsonFile = if ($env.NIX_ATTRS_JSON_FILE | path exists) {
-  $env.NIX_ATTRS_JSON_FILE
-} else {
-  $"($here)/.attrs.json"
-}
-let attrs = (open $attrsJsonFile)
+use env.nu *
+use std/log
 
-# Copy all .nu helper files into the sandbox
+let attrs = (get_attrs)
+
+log debug "Copying all .nu helper files into the sandbox"
 for file in $attrs.__nu_env {
-  let filename = ($file | parse "{__root}-{filename}" | get filename.0)
-  let target = $"($here)/($filename)"
+  # Strip the hash, etc.
+  # Removing any non-dash character before a final literal dash
+  # And removing
+  let filename = ($file | str replace --regex '^[^-]+-' '')
+  let target = $env.NIX_BUILD_TOP | path join $filename
+
   cp $file $target
 }
 

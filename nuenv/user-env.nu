@@ -2,6 +2,8 @@
 
 # Get the relative path of <path> with respect to either the Nix store root or the build directory
 # root.
+
+use std/log
 def relativePath [
   path: path # The path to extract
 ] {
@@ -19,27 +21,13 @@ def relativePath [
   }
 }
 
-# Display the <msg> in a pretty way.
-def log [
-  msg: string # The message to log.
-] {
-  print $"(ansi green)+(ansi reset) ($msg)"
-}
-
-# Output the error <msg> in a flashy way.
-def err [
-  msg: string # The error string to log
-] {
-  print $"(ansi red)ERROR(ansi reset): ($msg)"
-}
-
 # Check that <file> exists and throw an error if it doesn't.
 def ensureFileExists [
   file: path # The path to check for existence
 ] {
   if not (($file | path exists) and true) {
     let relativeFilePath = (relativePath $file)
-    err $"File not found at: (ansi red)($relativeFilePath)(ansi reset)"
+    log error $"File not found at: (ansi red)($relativeFilePath)(ansi reset)"
     exit 1
   }
 }
@@ -53,12 +41,16 @@ def substitute [
   --with (-w): string, # The replacement for <replace>
 ] {
   ensureFileExists $file
+
   # Store the initial file contents in a variable
   let orig = (open $file)
+
   # Delete the original file
   rm $file
+
   # Build a new string with the substitution applied
   let s = ($orig | str replace -a $replace $with)
+
   # Write the new string to the target file
   $s | save $out
 }

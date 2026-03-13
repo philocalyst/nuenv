@@ -1,18 +1,10 @@
 ## Utility commands
 
 export use env.nu *
+use std/log
 
 ## Parse the build environment
-
-# This branching is a necessary workaround for a bug in the Nix CLI fixed in
-# https://github.com/NixOS/nix/pull/8053
-let attrsJsonFile = if ($env.NIX_ATTRS_JSON_FILE | path exists) {
-  $env.NIX_ATTRS_JSON_FILE
-} else {
-  $"($env.NIX_BUILD_TOP)/.attrs.json"
-}
-
-let attrs = (open $attrsJsonFile)
+let attrs = (get_attrs)
 let initialPkgs = $attrs.packages
 
 # Nushell attributes
@@ -26,9 +18,10 @@ let nushell = {
 let drv = {
   name: $attrs.name, # The name of the derivation
   system: $attrs.system, # The build system
-  src: (glob $"($attrs.src)/**/*"), # Sources to copy into the sandbox
-  outputs: ($attrs.outputs | transpose key value),
+  src: (glob ($attrs.src | str join /**/*)), # Sources to copy into the sandbox
+  outputs: ($attrs.outputs | transpose key value), # Convert into table under key/value
   initialPackages: $initialPkgs, # Packages added by user
+
   # The packages environment variable is a space-separated string. This
   # pipeline converts it into a list.
   packages: (
@@ -48,28 +41,26 @@ let nix = {
 
 ## Provide info about the current derivation
 if $nix.debug {
-  banner "INFO"
-
-  info $"Realising the (blue $drv.name) derivation for (blue $drv.system)"
+  log info $"Realising the ($drv.name) derivation for ($drv.system)"
 
   let numCores = ($env.NIX_BUILD_CORES | into int)
-  info $"Running on (blue $numCores) core(if ($numCores > 1) { "s" })"
+  log info $"Running on ($numCores) core(if ($numCores > 1) { "s" })"
 
-  info $"Using Nushell (blue $nushell.version)"
+  log info $"Using Nushell ($nushell.version)"
 
   # Nix throws an error if the outputs array is empty, so we don't need to handle that case
-  info "Declared build outputs:"
+  log info "Declared build outputs:"
   for output in $drv.outputs { item $output.key }
 }
 
 ## Set up the environment
-if $nix.debug { banner "SETUP" }
+if $nix.debug { log debug "SETUP" }
 
 # Log user-added packages if debug is set
-if (not ($drv.initialPackages | is-empty)) and $nix.debug {
+if ($drv.initialPackages | is-not-empty) and $nix.debug {
   let numPackages = ($drv.initialPackages | length)
 
-  info $"Adding (blue ($numPackages | into string)) package(plural $numPackages) to PATH:"
+  log info $"Adding ($numPackages | into string) package(plural $numPackages) to PATH:"
 
   for pkg in $drv.initialPackages {
     let name = (getPkgName $nix.store $pkg)
@@ -78,7 +69,7 @@ if (not ($drv.initialPackages | is-empty)) and $nix.debug {
 }
 
 # Collect all packages into a string and set the PATH
-if $nix.debug { info $"Setting (purple "PATH")" }
+if $nix.debug { log info $'Setting (ansi rb) PATH (ansi rst)' }
 
 let packagesPath = (
   $drv.packages                  # List of strings
@@ -92,32 +83,33 @@ $env.PATH = $packagesPath
 let numAttrs = ($drv.extraAttrs | length)
 
 if $numAttrs != 0 {
-  if $nix.debug { info $"Setting (blue ($numAttrs | into string)) user-supplied environment variable(plural $numAttrs):" }
+  if $nix.debug { log info $"Setting ($numAttrs | into string) user-supplied environment variable(plural $numAttrs):" }
 
   for attr in $drv.extraAttrs {
-    if $nix.debug { item $"(yellow $attr.key) = \"($attr.value)\"" }
+    if $nix.debug { item $"($attr.key) = \"($attr.value)\"" }
     load-env {$attr.key: $attr.value}
   }
 }
 
 # Copy sources into sandbox
-if $nix.debug { info "Copying sources" }
+if $nix.debug { log info "Copying sources" }
 for src in $drv.src { cp -r -f $src $nix.sandbox }
 
 # Set environment variables for all outputs
 if $nix.debug {
   let numOutputs = ($drv.outputs | length)
-  info $"Setting (blue ($numOutputs | into string)) output environment variable(plural $numOutputs):"
+  log info $"Setting ($numOutputs | into string) output environment variable(plural $numOutputs):"
 }
+
 for output in ($drv.outputs) {
   let name = ($output | get key)
   let value = ($output | get value)
-  if $nix.debug { item $"(yellow $name) = \"($value)\"" }
+  if $nix.debug { item $"($name) = \"($value)\"" }
   load-env {$name: $value}
 }
 
 ## The realisation process
-if $nix.debug { banner "REALISATION" }
+if $nix.debug { log debug "REALISATION" }
 
 ## Realisation phases (just build and install for now, more later)
 
@@ -128,31 +120,28 @@ def runPhase [
   if $name in $attrs {
     let phase = ($attrs | get $name)
 
-    if $nix.debug { info $"Running (blue $name) phase" }
+    if $nix.debug { log info $"Running (ansi blue) $name (ansi rst) phase" }
 
     # We need to source the envFile prior to each phase so that custom Nushell
     # commands are registered. Right now there's a single env file but in
     # principle there could be per-phase scripts.
-    do --capture-errors {
+    try {
       nu --log-level warn --env-config $nushell.userEnvFile --commands $phase | print
-
-      let exitCode = $env.LAST_EXIT_CODE
-
-      if ($exitCode | into int) != 0 {
-        exit $exitCode
-      }
+    } catch { |e|
+      exit $e.exit_code
     }
-  } else if $nix.debug { info $"Skipping empty (blue $name) phase" }
+  } else if $nix.debug { log info $"Skipping empty (blue $name) phase" }
 }
 
 # The available phases (just one for now)
+# TODO: Add the rest of the phases here
 let phases = [ "build" ]
 
 for phase in $phases { runPhase $phase }
 
 ## Run if realisation succeeds
 if $nix.debug {
-  info "Outputs written:"
+  log info "Outputs written:"
 
   for output in ($drv.outputs) {
     let name = ($output | get key)
@@ -160,5 +149,5 @@ if $nix.debug {
     item $"(yellow $name) to (purple $value)"
   }
 
-  banner "DONE!"
+  log debug "DONE!"
 }
