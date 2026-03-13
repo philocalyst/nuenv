@@ -17,6 +17,10 @@
     }@attrs:
 
     let
+      # All nuenv .nu scripts live in a single store directory so they can
+      # resolve each other at parse time (use env.nu, use std/log, etc.)
+      nuenvDir = ../nuenv;
+
       # Gather arbitrary user-supplied environment variables
       reservedAttrs = [
         "build"
@@ -53,7 +57,7 @@
 
         # Build logic
         builder = "${nushell}/bin/nu"; # Use Nushell instead of Bash
-        args = [ ../nuenv/bootstrap.nu ]; # Run a bootstrap script that then runs the builder
+        args = [ "${nuenvDir}/bootstrap.nu" ]; # Run a bootstrap script that then runs the builder
 
         # When this is set, Nix writes the environment to a JSON file at
         # $NIX_BUILD_TOP/.attrs.json. Because Nushell can handle JSON natively, this approach
@@ -61,9 +65,9 @@
         __structuredAttrs = true;
 
         # Attributes passed to the environment (prefaced with __nu_ to avoid naming collisions)
-        __nu_builder = ../nuenv/builder.nu;
+        __nu_builder = "${nuenvDir}/builder.nu";
         __nu_debug = debug;
-        __nu_env = [ ../nuenv/env.nu ];
+        __nu_env = [ "${nuenvDir}/env.nu" ];
         __nu_extra_attrs = extraAttrs;
         __nu_nushell = "${nushell}/bin/nu";
       }
