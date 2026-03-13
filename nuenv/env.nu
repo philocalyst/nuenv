@@ -34,5 +34,6 @@ export def getPkgRoot [path: path] { $path | parse "{root}/bin/{__bin}" | get ro
 
 ## Get package name from full store path
 export def getPkgName [storeRoot: path, path: path] {
-  $path | parse --regex $"($storeRoot)/[^-]+-(?<pkg>.+)$" | get pkg.0
+  let regex = $storeRoot + '/[^-]+-(?<pkg>.+)$'
+  $path | parse --regex $regex | get pkg.0
 }

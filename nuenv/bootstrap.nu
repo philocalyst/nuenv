@@ -11,18 +11,19 @@ let attrs = (get_attrs)
 
 log debug "Copying all .nu helper files into the sandbox"
 for file in $attrs.__nu_env {
-  # Strip the hash, etc.
-  # Removing any non-dash character before a final literal dash
-  # And removing
-  let filename = ($file | str replace --regex '^[^-]+-' '')
+  let filename = ($file | path basename)
   let target = $env.NIX_BUILD_TOP | path join $filename
-
   cp $file $target
 }
+
+# Copy the builder script into the sandbox so it can find env.nu
+let builder_name = ($attrs.__nu_builder | path basename)
+cp $attrs.__nu_builder ($env.NIX_BUILD_TOP | path join $builder_name)
 
 # Set the PATH so that Nushell itself is discoverable. The PATH will be
 # overwritten later.
 $env.PATH = ($attrs.__nu_nushell | parse "{root}/nu" | get root.0)
 
-# Run the Nushell builder
-nu --commands (open $attrs.__nu_builder)
+# Run the Nushell builder from NIX_BUILD_TOP so it can find env.nu
+cd $env.NIX_BUILD_TOP
+nu $builder_name

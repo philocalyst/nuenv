@@ -36,7 +36,7 @@ let drv = {
 let nix = {
   sandbox: $env.NIX_BUILD_TOP, # Sandbox directory
   store: $env.NIX_STORE, # Nix store root
-  debug: (envToBool $attrs.__nu_debug) # Whether `debug = true` is set in the derivation
+  debug: $attrs.__nu_debug # Whether `debug = true` is set in the derivation
 }
 
 ## Provide info about the current derivation
@@ -130,7 +130,7 @@ def runPhase [
     } catch { |e|
       exit $e.exit_code
     }
-  } else if $nix.debug { log info $"Skipping empty (blue $name) phase" }
+  } else if $nix.debug { log info $"Skipping empty (ansi blue)($name)(ansi reset) phase" }
 }
 
 # The available phases (just one for now)
@@ -146,7 +146,7 @@ if $nix.debug {
   for output in ($drv.outputs) {
     let name = ($output | get key)
     let value = ($output | get value)
-    item $"(yellow $name) to (purple $value)"
+    item $"(ansi yellow)($name)(ansi reset) to (ansi purple)($value)(ansi reset)"
   }
 
   log debug "DONE!"

@@ -68,6 +68,6 @@ def substituteInPlace [
 def nuenvCommands [] {
   help commands
   | where command_type == "custom"
-  | where not name in ["create_left_prompt" "create_right_prompt" "nuenvCommands"]
+  | where name not-in ["create_left_prompt" "create_right_prompt" "nuenvCommands"]
   | select name usage
 }
