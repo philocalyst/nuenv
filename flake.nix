@@ -63,7 +63,7 @@
 
             writeShellApplication = final.callPackage ./lib/writeShellApplication.nix { };
 
-            # TODO: mkShell
+            mkShell = final.callPackage ./lib/mkShell.nix { };
           };
         };
       };
