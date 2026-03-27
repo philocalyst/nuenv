@@ -112,10 +112,11 @@ def unpackFile [src: path] {
 
 # Return true when a Makefile (or custom -f target) is present.
 def hasMakefile [makefile: string] {
-  ($makefile | is-not-empty)
-  or ("Makefile" | path exists)
-  or ("makefile" | path exists)
-  or ("GNUmakefile" | path exists)
+  if ($makefile | is-not-empty) {
+    $makefile | path exists
+  } else {
+    ["Makefile" "makefile" "GNUmakefile"] | any { path exists }
+  }
 }
 
 # Flatten and stringify a variadic set of flag sources.
@@ -228,11 +229,11 @@ def patchShebangsInDir [dir: path] {
 # files into the appropriate nix-support directories.
 def recordPropagatedDependencies [outputs: list, attrs: record] {
   let devOutput = (
-    $outputs | where key == "dev" | first?
+    $outputs | where key == "dev" | first
     | default ($outputs | first)
   )
   let binOutput = (
-    $outputs | where key == "bin" | first?
+    $outputs | where key == "bin" | first
     | default ($outputs | first)
   )
 
@@ -560,21 +561,21 @@ let phaseList = if ($attrs.phases | is-not-empty) {
   $attrs.phases
 } else {
   $attrs.prePhases
-  ++ ["unpack"]
-  ++ ["patch"]
-  ++ $attrs.preConfigurePhases
-  ++ ["configure"]
-  ++ $attrs.preBuildPhases
-  ++ ["build"]
-  ++ ["check"]
-  ++ $attrs.preInstallPhases
-  ++ ["install"]
-  ++ $attrs.preFixupPhases
-  ++ ["fixup"]
-  ++ ["installCheck"]
-  ++ $attrs.preDistPhases
-  ++ ["dist"]
-  ++ $attrs.postPhases
+  | append ["unpack"]
+  | append ["patch"]
+  | append $attrs.preConfigurePhases
+  | append ["configure"]
+  | append $attrs.preBuildPhases
+  | append ["build"]
+  | append ["check"]
+  | append $attrs.preInstallPhases
+  | append ["install"]
+  | append $attrs.preFixupPhases
+  | append ["fixup"]
+  | append ["installCheck"]
+  | append $attrs.preDistPhases
+  | append ["dist"]
+  | append $attrs.postPhases
 }
 
 # Tracks the source root after the unpack phase so we can cd into it.
