@@ -1,153 +1,640 @@
-## Utility commands
-
 export use env.nu *
 use std/log
 
-## Parse the build environment
 let attrs = (get_attrs)
 let initialPkgs = $attrs.packages
 
-# Nushell attributes
 let nushell = {
-  version: (version).version, # Nushell version
-  pkg: (getPkgRoot $attrs.builder), # Nushell package path
-  userEnvFile: $attrs.envFile # Functions that users can apply in realisation phases
+  version: (version).version,
+  pkg: (getPkgRoot $attrs.builder),
+  userEnvFile: $attrs.envFile,
 }
 
-# Derivation attributes
 let drv = {
-  name: $attrs.name, # The name of the derivation
-  system: $attrs.system, # The build system
-  src: (glob ($attrs.src | str join /**/*)), # Sources to copy into the sandbox
-  outputs: ($attrs.outputs | transpose key value), # Convert into table under key/value
-  initialPackages: $initialPkgs, # Packages added by user
-
-  # The packages environment variable is a space-separated string. This
-  # pipeline converts it into a list.
+  name: $attrs.name,
+  system: $attrs.system,
+  outputs: ($attrs.outputs | transpose key value),
+  initialPackages: $initialPkgs,
   packages: (
     $initialPkgs
-    | append $nushell.pkg # Add the Nushell package to the PATH
+    | append $nushell.pkg
     | split row (char space)
   ),
-  extraAttrs: ($attrs.__nu_extra_attrs | transpose key value), # Arbitrary environment variables
+  extraAttrs: ($attrs.__nu_extra_attrs | transpose key value),
 }
 
-# Nix build attributes
 let nix = {
-  sandbox: $env.NIX_BUILD_TOP, # Sandbox directory
-  store: $env.NIX_STORE, # Nix store root
-  debug: $attrs.__nu_debug # Whether `debug = true` is set in the derivation
+  sandbox: $env.NIX_BUILD_TOP,
+  store: $env.NIX_STORE,
+  debug: $attrs.__nu_debug,
 }
 
-## Provide info about the current derivation
 if $nix.debug {
   log info $"Realising the ($drv.name) derivation for ($drv.system)"
-
-  let numCores = ($env.NIX_BUILD_CORES | into int)
-  log info $"Running on ($numCores) core(if ($numCores > 1) { "s" })"
-
+  let numCores = ($env.NIX_BUILD_CORES? | default "1" | into int)
+  log info $"Running on ($numCores) core(plural $numCores)"
   log info $"Using Nushell ($nushell.version)"
-
-  # Nix throws an error if the outputs array is empty, so we don't need to handle that case
   log info "Declared build outputs:"
   for output in $drv.outputs { item $output.key }
 }
 
-## Set up the environment
-if $nix.debug { log debug "SETUP" }
-
-# Log user-added packages if debug is set
+# Build PATH from packages list
 if ($drv.initialPackages | is-not-empty) and $nix.debug {
-  let numPackages = ($drv.initialPackages | length)
-
-  log info $"Adding ($numPackages | into string) package(plural $numPackages) to PATH:"
-
+  let n = ($drv.initialPackages | length)
+  log info $"Adding ($n) package(plural $n) to PATH:"
   for pkg in $drv.initialPackages {
-    let name = (getPkgName $nix.store $pkg)
-    item $name
+    item (getPkgName $nix.store $pkg)
   }
 }
 
-# Collect all packages into a string and set the PATH
-if $nix.debug { log info $'Setting (ansi rb) PATH (ansi rst)' }
-
 let packagesPath = (
-  $drv.packages                  # List of strings
-  | each { |pkg| $"($pkg)/bin" } # Append /bin to each package path
-  | str join (char esep)      # Collect into a single colon-separated string
+  $drv.packages
+  | each { |pkg| $"($pkg)/bin" }
+  | str join (char esep)
 )
 $env.PATH = $packagesPath
 
-# Set user-supplied environment variables (à la FOO="bar"). Nix supplies this
-# list by removing reserved attributes (name, system, build, src, system, etc.).
+# Set user-supplied environment variables (anything not reserved)
 let numAttrs = ($drv.extraAttrs | length)
-
 if $numAttrs != 0 {
-  if $nix.debug { log info $"Setting ($numAttrs | into string) user-supplied environment variable(plural $numAttrs):" }
-
+  if $nix.debug {
+    log info $"Setting ($numAttrs) user-supplied environment variable(plural $numAttrs):"
+  }
   for attr in $drv.extraAttrs {
     if $nix.debug { item $"($attr.key) = \"($attr.value)\"" }
-    load-env {$attr.key: $attr.value}
+    load-env { $attr.key: $attr.value }
   }
 }
 
-# Copy sources into sandbox
-if $nix.debug { log info "Copying sources" }
-for src in $drv.src { cp -r -f $src $nix.sandbox }
-
-# Set environment variables for all outputs
-if $nix.debug {
-  let numOutputs = ($drv.outputs | length)
-  log info $"Setting ($numOutputs | into string) output environment variable(plural $numOutputs):"
+# Expose output paths as environment variables ($out, $dev, …)
+for output in $drv.outputs {
+  load-env { $output.key: $output.value }
 }
 
-for output in ($drv.outputs) {
-  let name = ($output | get key)
-  let value = ($output | get value)
-  if $nix.debug { item $"($name) = \"($value)\"" }
-  load-env {$name: $value}
+# $prefix defaults to the first output ($out) unless the derivation overrides it
+if ($attrs.prefix | is-empty) {
+  $env.prefix = $env.out
+} else {
+  $env.prefix = $attrs.prefix
 }
 
-## The realisation process
+# SOURCE_DATE_EPOCH for reproducible builds (mirrors nixpkgs default)
+if ("SOURCE_DATE_EPOCH" not-in ($env | columns)) {
+  $env.SOURCE_DATE_EPOCH = "315532800"
+}
+
+# Unpack a single source archive or copy a directory into cwd.
+def unpackFile [src: path] {
+  let name = ($src | path basename)
+  print $"unpacking source archive ($src)"
+  if ($name | str ends-with ".tar.gz") or ($name | str ends-with ".tgz") {
+    tar xzf $src
+  } else if ($name | str ends-with ".tar.bz2") or ($name | str ends-with ".tbz2") {
+    tar xjf $src
+  } else if ($name | str ends-with ".tar.xz") or ($name | str ends-with ".txz") {
+    tar xJf $src
+  } else if ($name | str ends-with ".tar.zst") {
+    tar --use-compress-program=zstd -xf $src
+  } else if ($name | str ends-with ".tar.lz") {
+    tar --use-compress-program=lzip -xf $src
+  } else if ($name | str ends-with ".tar") {
+    tar xf $src
+  } else if (($src | path parse | get extension) == "zip") {
+    unzip $src
+  } else if ($src | path type) == "dir" {
+    let dest = $name
+    cp -r $src $dest
+  } else {
+    log warning $"Don't know how to unpack ($name); copying as-is."
+    cp $src .
+  }
+}
+
+# Return true when a Makefile (or custom -f target) is present.
+def hasMakefile [makefile: string] {
+  ($makefile | is-not-empty)
+  or ("Makefile" | path exists)
+  or ("makefile" | path exists)
+  or ("GNUmakefile" | path exists)
+}
+
+# Flatten and stringify a variadic set of flag sources.
+def collectFlags [...sources] {
+  $sources
+  | flatten
+  | each { |f| $f | into string }
+  | where { |f| ($f | is-not-empty) }
+}
+
+# Convert a phase name to its capitalised hook-name fragment
+# e.g. "unpack" → "Unpack", "installCheck" → "InstallCheck"
+def phaseCapitalized [phase: string] {
+  match $phase {
+    "unpack"        => "Unpack"
+    "patch"         => "Patch"
+    "configure"     => "Configure"
+    "build"         => "Build"
+    "check"         => "Check"
+    "install"       => "Install"
+    "fixup"         => "Fixup"
+    "installCheck"  => "InstallCheck"
+    "dist"          => "Dist"
+    _               => ($phase | str capitalize)
+  }
+}
+
+# Decide whether a phase should be skipped.
+def shouldSkip [phase: string, attrs: record] {
+  match $phase {
+    "unpack"        => $attrs.dontUnpack
+    "patch"         => $attrs.dontPatch
+    "configure"     => $attrs.dontConfigure
+    "build"         => $attrs.dontBuild
+    "check"         => (not $attrs.doCheck)
+    "install"       => $attrs.dontInstall
+    "fixup"         => $attrs.dontFixup
+    "installCheck"  => (not $attrs.doInstallCheck)
+    "dist"          => (not $attrs.doDist)
+    _               => false
+  }
+}
+
+# Print the phase header (mirrors nixpkgs showPhaseHeader).
+def showPhaseHeader [phase: string] {
+  print $"Running phase: ($phase)"
+}
+
+# Print elapsed time when a phase took ≥ 30 s.
+def showPhaseFooter [phase: string, startNs: int, endNs: int] {
+  let delta = (($endNs - $startNs) / 1_000_000_000)
+  if $delta >= 30 {
+    let h = ($delta / 3600)
+    let m = (($delta mod 3600) / 60)
+    let s = ($delta mod 60)
+    mut msg = $"($phase) completed in "
+    if $h > 0 { $msg = $msg + $"($h) hours " }
+    if $m > 0 { $msg = $msg + $"($m) minutes " }
+    $msg = $msg + $"($s) seconds"
+    print $msg
+  }
+}
+
+# Patch interpreter shebangs under a directory tree.
+# Replaces bare /usr/bin/foo references with whatever `which foo` resolves to,
+# skipping paths already inside the Nix store.
+def patchShebangsInDir [dir: path] {
+  if not ($dir | path exists) { return }
+  let storeDir = $env.NIX_STORE
+
+  # find all regular executable files
+  let files = (
+    try { ^find $dir -type f -perm -0100 | lines } catch { [] }
+  )
+
+  for file in $files {
+    try {
+      let raw     = (open --raw $file)
+      let first   = ($raw | lines | first)
+      if not ($first | str starts-with "#!") { continue }
+
+      let shebang = ($first | str replace "#!" "" | str trim)
+      let parts   = ($shebang | split row " " | where { |p| ($p | is-not-empty) })
+      if ($parts | is-empty) { continue }
+      let interp  = ($parts | first)
+
+      # Already in store — nothing to do
+      if ($interp | str starts-with $storeDir) { continue }
+
+      # Skip env-style shebangs — too dynamic to rewrite safely
+      if ($interp | str ends-with "/env") { continue }
+
+      let interpName = ($interp | path basename)
+      let newInterp  = (try { which $interpName | str trim } catch { "" })
+      if ($newInterp | is-empty) { continue }
+
+      let rest       = ($parts | skip 1 | str join " ")
+      let newShebang = (if ($rest | is-not-empty) {
+        $"#!($newInterp) ($rest)"
+      } else {
+        $"#!($newInterp)"
+      })
+      let newContent = ($raw | str replace $first $newShebang)
+      $newContent | save --force $file
+    } catch { }
+  }
+}
+
+# Write propagated-{build,native-build}-inputs and propagated-user-env-packages
+# files into the appropriate nix-support directories.
+def recordPropagatedDependencies [outputs: list, attrs: record] {
+  let devOutput = (
+    $outputs | where key == "dev" | first?
+    | default ($outputs | first)
+  )
+  let binOutput = (
+    $outputs | where key == "bin" | first?
+    | default ($outputs | first)
+  )
+
+  if ($attrs.propagatedBuildInputs | is-not-empty) {
+    let dir = ($devOutput.value | path join "nix-support")
+    mkdir $dir
+    $attrs.propagatedBuildInputs | str join " "
+      | save --force ($dir | path join "propagated-build-inputs")
+  }
+
+  if ($attrs.propagatedNativeBuildInputs | is-not-empty) {
+    let dir = ($devOutput.value | path join "nix-support")
+    mkdir $dir
+    $attrs.propagatedNativeBuildInputs | str join " "
+      | save --force ($dir | path join "propagated-native-build-inputs")
+  }
+
+  if ($attrs.propagatedUserEnvPkgs | is-not-empty) {
+    let dir = ($binOutput.value | path join "nix-support")
+    mkdir $dir
+    $attrs.propagatedUserEnvPkgs | str join " "
+      | save --force ($dir | path join "propagated-user-env-packages")
+  }
+}
+
+
+# runHook and runUserPhase are closures so they can capture $attrs, $nix,
+# and $nushell from the surrounding script scope without being passed as args.
+
+# Run a hook script (preXxx / postXxx) when present and non-empty.
+let runHook = { |hookName: string|
+  if ($hookName in $attrs) {
+    let script = ($attrs | get $hookName)
+    if ($script | is-not-empty) {
+      if $nix.debug { log info $"  hook: ($hookName)" }
+      try {
+        nu --log-level warn --env-config $nushell.userEnvFile --commands $script
+        | print
+      } catch { |e|
+        log error $"Hook ($hookName) failed (exit ($e.exit_code))"
+        exit $e.exit_code
+      }
+    }
+  }
+}
+
+# Run the user-supplied phase script when present and non-empty.
+# Returns true when a script was found and executed, false otherwise.
+let runUserPhase = { |phaseName: string|
+  if ($phaseName in $attrs) {
+    let script = ($attrs | get $phaseName)
+    if ($script | is-not-empty) {
+      if $nix.debug { log info $"  user ($phaseName) script" }
+      try {
+        nu --log-level warn --env-config $nushell.userEnvFile --commands $script
+        | print
+      } catch { |e|
+        log error $"Phase ($phaseName) failed (exit ($e.exit_code))"
+        exit $e.exit_code
+      }
+      true
+    } else { false }
+  } else { false }
+}
+
+# unpack: extract source archives and return the new source-root directory.
+let defaultUnpack = {
+  let sources = if ($attrs.srcs | is-not-empty) { $attrs.srcs } else { [$attrs.src] }
+
+  let dirsBefore = (ls | where type == dir | get name)
+
+  for src in $sources { unpackFile $src }
+
+  let dirsAfter = (ls | where type == dir | get name)
+  let newDirs   = ($dirsAfter | where { |d| $d not-in $dirsBefore })
+
+  let root = if ($newDirs | length) > 1 {
+    # Multiple new dirs — acceptable only when sourceRoot is pre-set
+    if ($attrs.sourceRoot | is-not-empty) {
+      $attrs.sourceRoot
+    } else {
+      log error "unpacker produced multiple directories; set sourceRoot to disambiguate"
+      exit 1
+    }
+  } else if ($newDirs | is-empty) {
+    # No new directory (e.g. flat file archive) — stay in build top
+    ""
+  } else {
+    $newDirs | first
+  }
+
+  if ($root | is-not-empty) {
+    print $"source root is ($root)"
+    if not $attrs.dontMakeSourcesWritable {
+      try { chmod -R u+w $root } catch { }
+    }
+  }
+  $root
+}
+
+# patch: apply a list of patch files.
+let defaultPatch = {
+  if ($attrs.patches | is-empty) {
+    if $nix.debug { log info "No patches to apply." }
+  } else {
+    for patch in $attrs.patches {
+      print $"applying patch ($patch)"
+      let pname  = ($patch | path basename)
+      let flags  = $attrs.patchFlags
+      if ($pname | str ends-with ".gz") {
+        gzip -dc $patch | patch ...$flags
+      } else if ($pname | str ends-with ".bz2") {
+        bzip2 -dc $patch | patch ...$flags
+      } else if ($pname | str ends-with ".xz") {
+        xz -dc $patch | patch ...$flags
+      } else {
+        open --raw $patch | patch ...$flags
+      }
+    }
+  }
+}
+
+# configure: run ./configure (or a custom configureScript) with flags.
+let defaultConfigure = {
+  let script = if ($attrs.configureScript | is-not-empty) {
+    $attrs.configureScript
+  } else if ("./configure" | path exists) {
+    "./configure"
+  } else { "" }
+
+  if ($script | is-not-empty) {
+    mut flags = ($attrs.configureFlags ++ $attrs.configureFlagsArray)
+
+    if not $attrs.dontAddPrefix {
+      $flags = ([$"($attrs.prefixKey)($env.prefix)"] ++ $flags)
+    }
+
+    # Opt-in auto-flags that mirror nixpkgs behaviour
+    if not $attrs.dontAddDisableDepTrack {
+      try {
+        if (open --raw $script | str contains "dependency-tracking") {
+          $flags = (["--disable-dependency-tracking"] ++ $flags)
+        }
+      } catch { }
+    }
+    if not $attrs.dontDisableStatic {
+      try {
+        if (open --raw $script | str contains "enable-static") {
+          $flags = (["--disable-static"] ++ $flags)
+        }
+      } catch { }
+    }
+
+    print $"configure flags: ($flags | str join ' ')"
+    run-external $script ...$flags
+  } else {
+    print "no configure script, doing nothing"
+  }
+}
+
+# build: run make (or do nothing when no Makefile is present).
+let defaultBuild = {
+  if (hasMakefile $attrs.makefile) {
+    let parallelJ = if $attrs.enableParallelBuilding {
+      [$"-j($env.NIX_BUILD_CORES? | default '1')"]
+    } else { [] }
+    let flags    = (collectFlags $parallelJ $attrs.makeFlags $attrs.buildFlags $attrs.buildFlagsArray)
+    let makeArgs = if ($attrs.makefile | is-not-empty) {
+      ["-f" $attrs.makefile] ++ $flags
+    } else { $flags }
+    print $"build flags: ($makeArgs | str join ' ')"
+    run-external "make" ...$makeArgs
+  } else {
+    print "no Makefile or custom build, doing nothing"
+  }
+}
+
+# check: run make check / make test (only reached when doCheck = true).
+let defaultCheck = {
+  if (hasMakefile $attrs.makefile) {
+    let target = if ($attrs.checkTarget | is-not-empty) {
+      $attrs.checkTarget
+    } else {
+      # Probe for check target, fall back to test
+      let hasCheck = ((do { make -n check } | complete).exit_code == 0)
+      if $hasCheck { "check" } else { "test" }
+    }
+    let parallelJ = if $attrs.enableParallelChecking {
+      [$"-j($env.NIX_BUILD_CORES? | default '1')"]
+    } else { [] }
+    let flags    = (collectFlags $parallelJ $attrs.makeFlags $attrs.checkFlags $attrs.checkFlagsArray [$target])
+    let makeArgs = if ($attrs.makefile | is-not-empty) {
+      ["-f" $attrs.makefile] ++ $flags
+    } else { $flags }
+    print $"check flags: ($makeArgs | str join ' ')"
+    run-external "make" ...$makeArgs
+  } else {
+    print "no Makefile or custom checkPhase, doing nothing"
+  }
+}
+
+# install: run make install into $prefix.
+let defaultInstall = {
+  if (hasMakefile $attrs.makefile) {
+    mkdir $env.prefix
+    let parallelJ = if $attrs.enableParallelInstalling {
+      [$"-j($env.NIX_BUILD_CORES? | default '1')"]
+    } else { [] }
+    let targets  = if ($attrs.installTargets | is-not-empty) { $attrs.installTargets } else { ["install"] }
+    let flags    = (collectFlags $parallelJ $attrs.makeFlags $attrs.installFlags $attrs.installFlagsArray $targets)
+    let makeArgs = if ($attrs.makefile | is-not-empty) {
+      ["-f" $attrs.makefile] ++ $flags
+    } else { $flags }
+    print $"install flags: ($makeArgs | str join ' ')"
+    run-external "make" ...$makeArgs
+  } else {
+    print "no Makefile or custom install, doing nothing"
+  }
+}
+
+# fixup: strip binaries, patch shebangs, record propagated deps, copy setup hook.
+let defaultFixup = {
+  # Make outputs writable before stripping / patching
+  for output in $drv.outputs {
+    if ($output.value | path exists) {
+      try { chmod -R u+w,u-s,g-s $output.value } catch { }
+    }
+  }
+
+  # Strip binaries
+  if not $attrs.dontStrip {
+    for output in $drv.outputs {
+      let outPath = $output.value
+      if not ($outPath | path exists) { continue }
+
+      # Strip-all dirs (e.g. debug packages)
+      for stripDir in $attrs.stripAllList {
+        let target = ($outPath | path join $stripDir)
+        if ($target | path exists) {
+          for f in (try { ^find $target -type f | lines } catch { [] }) {
+            try { run-external "strip" ...$attrs.stripAllFlags $f } catch { }
+          }
+        }
+      }
+
+      # Strip-debug dirs (default: lib, lib32, lib64, libexec, bin, sbin)
+      let debugDirs = if ($attrs.stripDebugList | is-not-empty) {
+        $attrs.stripDebugList
+      } else {
+        ["lib" "lib32" "lib64" "libexec" "bin" "sbin"]
+      }
+      for dir in $debugDirs {
+        let target = ($outPath | path join $dir)
+        if ($target | path exists) {
+          for f in (try { ^find $target -type f | lines } catch { [] }) {
+            try { run-external "strip" ...$attrs.stripDebugFlags $f } catch { }
+          }
+        }
+      }
+    }
+  }
+
+  # Patch shebangs in all outputs
+  if not $attrs.dontPatchShebangs {
+    for output in $drv.outputs {
+      if ($output.value | path exists) {
+        patchShebangsInDir $output.value
+      }
+    }
+  }
+
+  # Record propagated dependencies
+  recordPropagatedDependencies $drv.outputs $attrs
+
+  # Copy setup hook into nix-support/setup-hook of the dev output
+  if ($attrs.setupHook | is-not-empty) {
+    let devOut = (
+      $drv.outputs | where key == "dev" | first?
+      | default ($drv.outputs | first)
+    )
+    let dir = ($devOut.value | path join "nix-support")
+    mkdir $dir
+    cp $attrs.setupHook ($dir | path join "setup-hook")
+  }
+}
+
+# installCheck: run make installcheck (only reached when doInstallCheck = true).
+let defaultInstallCheck = {
+  if (hasMakefile $attrs.makefile) {
+    let target   = if ($attrs.installCheckTarget | is-not-empty) { $attrs.installCheckTarget } else { "installcheck" }
+    let flags    = (collectFlags $attrs.makeFlags $attrs.installCheckFlags $attrs.installCheckFlagsArray [$target])
+    let makeArgs = if ($attrs.makefile | is-not-empty) { ["-f" $attrs.makefile] ++ $flags } else { $flags }
+
+    print $"installcheck flags: ($makeArgs | str join ' ')"
+
+    run-external "make" ...$makeArgs
+  } else {
+    print "no Makefile or custom installCheckPhase, doing nothing"
+  }
+}
+
+# dist: run make dist and optionally copy tarballs to $out/tarballs.
+let defaultDist = {
+  let target   = if ($attrs.distTarget | is-not-empty) { $attrs.distTarget } else { "dist" }
+  let flags    = (collectFlags $attrs.distFlags $attrs.distFlagsArray [$target])
+  let makeArgs = if ($attrs.makefile | is-not-empty) { ["-f" $attrs.makefile] ++ $flags } else { $flags }
+  print $"dist flags: ($makeArgs | str join ' ')"
+  run-external "make" ...$makeArgs
+
+  if not $attrs.dontCopyDist {
+    let tarballDir = ($env.out | path join "tarballs")
+    mkdir $tarballDir
+    let sources = if ($attrs.tarballs | is-not-empty) {
+      $attrs.tarballs
+    } else {
+      glob "*.tar.gz"
+    }
+    for t in $sources {
+      if ($t | path exists) { cp -v $t $tarballDir }
+    }
+  }
+}
+
+let phaseList = if ($attrs.phases | is-not-empty) {
+  $attrs.phases
+} else {
+  $attrs.prePhases
+  ++ ["unpack"]
+  ++ ["patch"]
+  ++ $attrs.preConfigurePhases
+  ++ ["configure"]
+  ++ $attrs.preBuildPhases
+  ++ ["build"]
+  ++ ["check"]
+  ++ $attrs.preInstallPhases
+  ++ ["install"]
+  ++ $attrs.preFixupPhases
+  ++ ["fixup"]
+  ++ ["installCheck"]
+  ++ $attrs.preDistPhases
+  ++ ["dist"]
+  ++ $attrs.postPhases
+}
+
+# Tracks the source root after the unpack phase so we can cd into it.
+mut sourceRoot = if ($attrs.sourceRoot | is-not-empty) { $attrs.sourceRoot } else { "" }
+
 if $nix.debug { log debug "REALISATION" }
 
-## Realisation phases (just build and install for now, more later)
-
-# Run a derivation phase (skip if empty)
-def runPhase [
-  name: string,
-] {
-  if $name in $attrs {
-    let phase = ($attrs | get $name)
-
-    if $nix.debug { log info $"Running (ansi blue) $name (ansi rst) phase" }
-
-    # We need to source the envFile prior to each phase so that custom Nushell
-    # commands are registered. Right now there's a single env file but in
-    # principle there could be per-phase scripts.
-    try {
-      nu --log-level warn --env-config $nushell.userEnvFile --commands $phase | print
-    } catch { |e|
-      exit $e.exit_code
-    }
-  } else if $nix.debug { log info $"Skipping empty (ansi blue)($name)(ansi reset) phase" }
-}
-
-# The available phases (just one for now)
-# TODO: Add the rest of the phases here
-let phases = [ "build" ]
-
-for phase in $phases { runPhase $phase }
-
-## Run if realisation succeeds
-if $nix.debug {
-  log info "Outputs written:"
-
-  for output in ($drv.outputs) {
-    let name = ($output | get key)
-    let value = ($output | get value)
-    item $"(ansi yellow)($name)(ansi reset) to (ansi purple)($value)(ansi reset)"
+for phase in $phaseList {
+  if (shouldSkip $phase $attrs) {
+    if $nix.debug { log info $"Skipping phase: ($phase)" }
+    continue
   }
 
+  showPhaseHeader $phase
+  let tStart = (date now | into int)
+
+  let cap = (phaseCapitalized $phase)
+  do $runHook $"pre($cap)"
+
+  let hasUser = (do $runUserPhase $phase)
+
+  if not $hasUser {
+    match $phase {
+      "unpack" => {
+        let root = (do $defaultUnpack)
+        $sourceRoot = $root
+      }
+      "patch"        => { do $defaultPatch }
+      "configure"    => { do $defaultConfigure }
+      "build"        => { do $defaultBuild }
+      "check"        => { do $defaultCheck }
+      "install"      => { do $defaultInstall }
+      "fixup"        => { do $defaultFixup }
+      "installCheck" => { do $defaultInstallCheck }
+      "dist"         => { do $defaultDist }
+      _ => {
+        if $nix.debug {
+          log info $"No default implementation for custom phase '($phase)'; nothing to do."
+        }
+      }
+    }
+  }
+
+  do $runHook $"post($cap)"
+
+  let tEnd = (date now | into int)
+  showPhaseFooter $phase $tStart $tEnd
+
+  # After unpack, change into the source root directory so all subsequent
+  # phases (patch, configure, build …) operate on the right tree.
+  if $phase == "unpack" and ($sourceRoot | is-not-empty) {
+    if $nix.debug { log info $"Entering source root: ($sourceRoot)" }
+    cd $sourceRoot
+  }
+}
+
+if $nix.debug {
+  log info "Outputs written:"
+  for output in $drv.outputs {
+    item $"(ansi yellow)($output.key)(ansi reset) → (ansi purple)($output.value)(ansi reset)"
+  }
   log debug "DONE!"
 }
