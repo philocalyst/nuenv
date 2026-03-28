@@ -71,6 +71,12 @@ for output in $drv.outputs {
   load-env { $output.key: $output.value }
 }
 
+# Expose src (and srcs) so phase scripts can reference $env.src / $env.srcs
+load-env { src: $attrs.src }
+if ($attrs.srcs | is-not-empty) {
+  load-env { srcs: ($attrs.srcs | str join " ") }
+}
+
 # $prefix defaults to the first output ($out) unless the derivation overrides it
 if ($attrs.prefix | is-empty) {
   $env.prefix = $env.out
