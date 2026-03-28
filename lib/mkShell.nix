@@ -94,6 +94,10 @@ lib.extendMkDerivation {
     {
       inherit name;
 
+      # mkShell does not require a real source; use a dummy unless the caller
+      # explicitly provides one.
+      src = attrs.src or (builtins.toFile "nuenv-shell-src" "");
+
       buildInputs = mergeInputs "buildInputs";
       nativeBuildInputs = packages ++ commandPkgs ++ (mergeInputs "nativeBuildInputs");
       propagatedBuildInputs = mergeInputs "propagatedBuildInputs";
