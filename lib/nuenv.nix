@@ -4,9 +4,14 @@
     nushell: # nixpkgs.nushell (from overlay)
     sys: # nixpkgs.system (from overlay)
 
-    {
-      name, # The name of the derivation
-      src, # The derivation's primary source (path or derivation)
+    # Accept either a plain attrset or a fixed-point function.  lib.extendMkDerivation
+    # (and stdenv.mkDerivation) pass a function `final: attrs` rather than a plain set.
+    fpOrAttrs:
+
+    (
+      {
+        name, # The name of the derivation
+        src, # The derivation's primary source (path or derivation)
       packages ? [ ], # Packages provided to the realisation process
       system ? sys, # The build system
       debug ? true, # Run in debug mode
@@ -415,7 +420,8 @@
         __nu_nushell = "${nushell}/bin/nu";
       }
       // extraAttrs
-    );
+    )
+  ) (if builtins.isFunction fpOrAttrs then let self = fpOrAttrs self; in self else fpOrAttrs);
 
   # An analogue to writeScriptBin but for Nushell rather than Bash scripts.
   mkNushellScript =
