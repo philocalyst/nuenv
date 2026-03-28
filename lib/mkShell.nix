@@ -118,18 +118,10 @@ lib.extendMkDerivation {
       installCheck = resolvePhase "installCheck" "installCheckPhase" "";
       dist = resolvePhase "dist" "distPhase" "";
 
-      # The build/buildPhase is the most commonly customised phase; provide a
-      # sensible default that records the environment for introspection.
+      # For nix develop the builder never runs; for nix build we still need a
+      # valid output path.  Just create the directory so Nix is satisfied.
       build = resolvePhase "build" "buildPhase" ''
-        {
-          print "------------------------------------------------------------"
-          print " WARNING: the existence of this path is not guaranteed."
-          print " It is an internal implementation detail for nuenv.mkShell."
-          print "------------------------------------------------------------"
-          print ""
-          # Record all environment variables for debugging
-          $env | table --expand | save --force $env.out
-        }
+        mkdir $env.out
       '';
 
       preUnpack = resolvePhase "preUnpack" "preUnpack" "";
