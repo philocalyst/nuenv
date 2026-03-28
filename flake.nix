@@ -300,6 +300,7 @@
             unpack = ''
               mkdir src
               cp ($env.src | path join "README.md") src/
+              chmod u+w src/README.md
             '';
 
             # Patch phase: capitalise the first heading
