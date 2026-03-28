@@ -269,12 +269,12 @@ let runHook = { |hookName: string|
     let script = ($attrs | get $hookName)
     if ($script | is-not-empty) {
       if $nix.debug { log info $"  hook: ($hookName)" }
-      try {
-        nu --log-level warn --env-config $nushell.userEnvFile --commands $script
-        | print
-      } catch { |e|
-        log error $"Hook ($hookName) failed (exit ($e.exit_code))"
-        exit $e.exit_code
+      let result = (nu --log-level warn --env-config $nushell.userEnvFile --commands $script | complete)
+      if ($result.stdout | is-not-empty) { $result.stdout | print }
+      if ($result.stderr | is-not-empty) { $result.stderr | print }
+      if $result.exit_code != 0 {
+        log error $"Hook ($hookName) failed (exit ($result.exit_code))"
+        exit $result.exit_code
       }
     }
   }
@@ -287,12 +287,12 @@ let runUserPhase = { |phaseName: string|
     let script = ($attrs | get $phaseName)
     if ($script | is-not-empty) {
       if $nix.debug { log info $"  user ($phaseName) script" }
-      try {
-        nu --log-level warn --env-config $nushell.userEnvFile --commands $script
-        | print
-      } catch { |e|
-        log error $"Phase ($phaseName) failed (exit ($e.exit_code))"
-        exit $e.exit_code
+      let result = (nu --log-level warn --env-config $nushell.userEnvFile --commands $script | complete)
+      if ($result.stdout | is-not-empty) { $result.stdout | print }
+      if ($result.stderr | is-not-empty) { $result.stderr | print }
+      if $result.exit_code != 0 {
+        log error $"Phase ($phaseName) failed (exit ($result.exit_code))"
+        exit $result.exit_code
       }
       true
     } else { false }

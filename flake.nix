@@ -164,7 +164,7 @@
           nuenv = pkgs.mkShell {
             packages = with pkgs; [ nushell ];
             shellHook = ''
-              nu --config ${./nuenv/user-env.nu}
+              nu --env-config ${./nuenv/user-env.nu}
             '';
           };
         }
@@ -286,6 +286,54 @@
             name = "throws-nushell-error";
             src = ./.;
             build = builtins.readFile ./example/error.nu;
+          };
+
+          # Demonstrates the full phase pipeline:
+          #   unpack → patch → configure → build → install → fixup
+          # All phases run under Nushell; no Bash anywhere in the pipeline.
+          fullPipeline = pkgs.nuenv.mkDerivation {
+            name = "full-pipeline-demo";
+            packages = [ pkgs.hello pkgs.coreutils ];
+            src = ./.;
+
+            # Override unpack: skip archive extraction, just copy the README
+            unpack = ''
+              mkdir src
+              cp ($env.src | path join "README.md") src/
+            '';
+
+            # Patch phase: capitalise the first heading
+            patch = ''
+              substituteInPlace src/README.md --replace "# Nuenv" --with "# Nuenv (patched)"
+            '';
+
+            # Configure: nothing to configure — write a config record instead
+            configure = ''
+              {version: "demo", built_with: "nushell"} | to json | save config.json
+            '';
+
+            # Build: produce an artefact from the patched source and config
+            build = ''
+              let cfg = (open config.json)
+              [
+                $"Built with Nushell ($cfg.version) — ($cfg.built_with)",
+                (open src/README.md | lines | first 3 | str join "\n")
+              ] | str join "\n\n" | save output.txt
+            '';
+
+            # Install: place the artefact under $out
+            install = ''
+              let share = $"($env.out)/share/full-pipeline-demo"
+              mkdir $share
+              cp output.txt $share
+              cp config.json $share
+            '';
+
+            # postInstall hook: write a manifest
+            postInstall = ''
+              ls ($"($env.out)/share/full-pipeline-demo") | to json
+                | save $"($env.out)/share/full-pipeline-demo/manifest.json"
+            '';
           };
         }
       );
