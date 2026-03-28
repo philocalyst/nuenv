@@ -1,6 +1,8 @@
 {
   lib,
   nuenv,
+  nushell,
+  writeTextFile,
 }:
 lib.extendMkDerivation {
   constructDrv = nuenv.mkDerivation;
@@ -8,6 +10,8 @@ lib.extendMkDerivation {
   excludeDrvArgNames = [
     "packages"
     "inputsFrom"
+    "commands"
+    "commandsDir"
   ];
 
   extendDrvArgs =
@@ -20,6 +24,17 @@ lib.extendMkDerivation {
 
       # Propagate all inputs from the listed derivations
       inputsFrom ? [ ],
+
+      # Nushell script files to expose as shell commands.
+      # Each entry may be a path (e.g. ./scripts/ci.nu) or a bare name string
+      # (e.g. "ci") resolved relative to `commandsDir`.
+      # A thin wrapper named after the file (without .nu) is added to PATH so
+      # the script is callable directly from `nix develop` / `nix shell`.
+      commands ? [ ],
+
+      # Base directory used to resolve bare-name entries in `commands`.
+      # Example: commandsDir = ./.config/scripts; commands = [ "ci" "build" ];
+      commandsDir ? null,
       ...
     }@attrs:
     let
@@ -35,12 +50,52 @@ lib.extendMkDerivation {
       resolvePhase =
         nuenvName: nixpkgsName: fallback:
         attrs.${nuenvName} or attrs.${nixpkgsName} or fallback;
+
+      # Resolve each commands entry to { name, path }.
+      # - Path values are used directly; the command name is the basename
+      #   with the .nu suffix removed.
+      # - String values are treated as bare names; commandsDir must be set.
+      resolvedCommands = map (
+        cmd:
+        if builtins.isPath cmd || lib.isDerivation cmd then
+          {
+            path = cmd;
+            name = lib.removeSuffix ".nu" (builtins.baseNameOf (builtins.toString cmd));
+          }
+        else
+          let
+            bareName = lib.removeSuffix ".nu" cmd;
+          in
+          {
+            name = bareName;
+            path =
+              if commandsDir != null then
+                commandsDir + "/${bareName}.nu"
+              else
+                throw "nuenv.mkShell: commands entry '${cmd}' is a string but commandsDir is not set";
+          }
+      ) commands;
+
+      # For each resolved command, create a thin wrapper that runs the .nu
+      # script via the Nushell binary so it is available in PATH.
+      commandPkgs = map (
+        { name, path }:
+        writeTextFile {
+          inherit name;
+          destination = "/bin/${name}";
+          executable = true;
+          text = ''
+            #!/bin/sh
+            exec ${nushell}/bin/nu ${path} "$@"
+          '';
+        }
+      ) resolvedCommands;
     in
     {
       inherit name;
 
       buildInputs = mergeInputs "buildInputs";
-      nativeBuildInputs = packages ++ (mergeInputs "nativeBuildInputs");
+      nativeBuildInputs = packages ++ commandPkgs ++ (mergeInputs "nativeBuildInputs");
       propagatedBuildInputs = mergeInputs "propagatedBuildInputs";
       propagatedNativeBuildInputs = mergeInputs "propagatedNativeBuildInputs";
 

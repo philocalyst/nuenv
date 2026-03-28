@@ -167,6 +167,14 @@
               nu --env-config ${./nuenv/user-env.nu}
             '';
           };
+
+          # Demonstrates nuenv.mkShell's `commands` key.
+          # Run `nix develop .#scripts` then call `greet` or `greet Alice`.
+          scripts = pkgs.nuenv.mkShell {
+            packages = [ pkgs.nushell ];
+            # Explicit path — command name is derived from the filename.
+            commands = [ ./example/greet.nu ];
+          };
         }
       );
 
