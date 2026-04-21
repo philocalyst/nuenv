@@ -136,6 +136,52 @@
       # resolve each other at parse time (use env.nu, use std/log, etc.)
       nuenvDir = ../nuenv;
 
+      scriptAttrNames = [
+        "unpack"
+        "patch"
+        "configure"
+        "build"
+        "check"
+        "install"
+        "fixup"
+        "installCheck"
+        "dist"
+        "preUnpack"
+        "postUnpack"
+        "prePatch"
+        "postPatch"
+        "preConfigure"
+        "postConfigure"
+        "preBuild"
+        "postBuild"
+        "preCheck"
+        "postCheck"
+        "preInstall"
+        "postInstall"
+        "preFixup"
+        "postFixup"
+        "preInstallCheck"
+        "postInstallCheck"
+        "preDist"
+        "postDist"
+      ];
+
+      coerceScript =
+        value:
+        if builtins.isPath value then
+          builtins.readFile value
+        else if builtins.isString value then
+          value
+        else
+          throw "Nuenv phase and hook attributes must be strings or paths.";
+
+      normalizedScriptAttrs = builtins.listToAttrs (
+        map (name: {
+          inherit name;
+          value = coerceScript (attrs.${name} or "");
+        }) scriptAttrNames
+      );
+
       # Attributes consumed internally — excluded from __nu_extra_attrs so
       # they are not re-exported as arbitrary environment variables.
       reservedAttrs = [
@@ -266,7 +312,8 @@
         "__nu_nushell"
       ];
 
-      extraAttrs = removeAttrs attrs reservedAttrs;
+      normalizedAttrs = attrs // normalizedScriptAttrs;
+      extraAttrs = removeAttrs normalizedAttrs reservedAttrs;
     in
     derivation (
       {
@@ -282,6 +329,7 @@
 
         # Phases
         inherit
+          (normalizedAttrs)
           unpack
           patch
           configure
@@ -295,6 +343,7 @@
 
         # Hooks
         inherit
+          (normalizedAttrs)
           preUnpack
           postUnpack
           prePatch

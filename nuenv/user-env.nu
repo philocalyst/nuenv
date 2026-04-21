@@ -42,12 +42,26 @@ export def install [
 export def substitute [
   file: path,  # Source file
   out: path,   # Destination file
-  --replace (-r): string,  # String to search for
-  --with (-w): string,     # Replacement string
+  --replace (-r): string = "",       # String to search for
+  --replace-fail (-f): string = "",  # String to search for, failing if absent
+  --with (-w): string,               # Replacement string
 ] {
   ensureFileExists $file
-  open --raw $file
-    | str replace --all $replace $with
+  let original = (open --raw $file)
+  let needle = if ($replace_fail | is-not-empty) { $replace_fail } else { $replace }
+
+  if ($needle | is-empty) {
+    log error "substitute: pass either --replace or --replace-fail"
+    exit 1
+  }
+
+  if ($replace_fail | is-not-empty) and not ($original | str contains $replace_fail) {
+    log error $"substitute: expected to find '(ansi red)($replace_fail)(ansi reset)' in (relativePath $file)"
+    exit 1
+  }
+
+  $original
+    | str replace --all $needle $with
     | save --force $out
 }
 
@@ -55,11 +69,12 @@ export def substitute [
 # files.
 export def substituteInPlace [
   ...files: path,          # One or more files to edit in place
-  --replace (-r): string,  # String to search for
-  --with (-w): string,     # Replacement string
+  --replace (-r): string = "",       # String to search for
+  --replace-fail (-f): string = "",  # String to search for, failing if absent
+  --with (-w): string,               # Replacement string
 ] {
   for file in $files {
-    substitute $file $file --replace $replace --with $with
+    substitute $file $file --replace $replace --replace-fail $replace_fail --with $with
   }
 }
 
